@@ -11,5 +11,6 @@ spec:
     - name: wget
       image: busybox
       command: ['wget']
-      args: ['{{ include "demo.fullname" . }}:{{ .Values.service.port }}']
+      # args: ['{{ include "demo.fullname" . }}:{{ .Values.service.port }}']
+      args: ['{{ include "demo.fullname" . }}:25'] # esto va a generar un error
   restartPolicy: Never
