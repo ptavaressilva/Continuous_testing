@@ -1,10 +1,17 @@
-pipeline { 
+pipeline {
   agent any
   environment {
-    WORKINGDIR = "infrastructure/repositories"
+    WORKINGDIR = "./"
   }
   stages {
-    stage('Review Terraform Plan') {
+    stage('Configure Kubernetes Access') {
+      steps {
+        sh """
+        aws eks update-kubeconfig --name continuous-testing --alias continuous-testing
+        """
+      }
+    }
+    stage('Deploy QA') {
       when {
         beforeAgent true
         allOf {
@@ -12,37 +19,26 @@ pipeline {
         }
       }
       steps{
-        dir("${WORKINGDIR}/module/test") {
-          sh """
-          aws sts assume-role-with-web-identity \
-          --role-arn \$AWS_ROLE_ARN \
-          --role-session-name mh9test \
-          --web-identity-token file://\$AWS_WEB_IDENTITY_TOKEN_FILE \
-          --duration-seconds 1000 > /tmp/irp-cred.txt
-          export AWS_ACCESS_KEY_ID="\$(cat /tmp/irp-cred.txt | jq -r ".Credentials.AccessKeyId")"
-          export AWS_SECRET_ACCESS_KEY="\$(cat /tmp/irp-cred.txt | jq -r ".Credentials.SecretAccessKey")"
-          export AWS_SESSION_TOKEN="\$(cat /tmp/irp-cred.txt | jq -r ".Credentials.SessionToken")"
-          go test -mod vendor
-          """
-        }
         dir(WORKINGDIR) {
           sh """
-          aws sts assume-role-with-web-identity \
-          --role-arn \$AWS_ROLE_ARN \
-          --role-session-name mh9test \
-          --web-identity-token file://\$AWS_WEB_IDENTITY_TOKEN_FILE \
-          --duration-seconds 1000 > /tmp/irp-cred.txt
-          export AWS_ACCESS_KEY_ID="\$(cat /tmp/irp-cred.txt | jq -r ".Credentials.AccessKeyId")"
-          export AWS_SECRET_ACCESS_KEY="\$(cat /tmp/irp-cred.txt | jq -r ".Credentials.SecretAccessKey")"
-          export AWS_SESSION_TOKEN="\$(cat /tmp/irp-cred.txt | jq -r ".Credentials.SessionToken")"
-          terraform version
-          terraform init
-          terraform plan
+          helm upgrade rabbit chart/ --set persistence.enabled=false --debug --wait --install --namespace qa
+          """
+          script {
+            rc = sh(script: "helm test rabbit --logs --namespace qa", returnStatus: true)
+            if (rc != 0) {
+              sh """
+              helm rollback rabbit 0 -n qa
+              exit 1
+              """
+            }
+          }
+          sh """
+           kubectl delete pod -n qa rabbit-rabbitmq-test
           """
         }
       }
     }
-    stage('Apply Terraform') {
+    stage('Deploy Prod') {
       when {
         beforeAgent true
         allOf {
@@ -52,19 +48,23 @@ pipeline {
       steps{
         dir(WORKINGDIR) {
           sh """
-          terraform init
-          aws sts assume-role-with-web-identity \
-          --role-arn \$AWS_ROLE_ARN \
-          --role-session-name mh9test \
-          --web-identity-token file://\$AWS_WEB_IDENTITY_TOKEN_FILE \
-          --duration-seconds 1000 > /tmp/irp-cred.txt
-          export AWS_ACCESS_KEY_ID="\$(cat /tmp/irp-cred.txt | jq -r ".Credentials.AccessKeyId")"
-          export AWS_SECRET_ACCESS_KEY="\$(cat /tmp/irp-cred.txt | jq -r ".Credentials.SecretAccessKey")"
-          export AWS_SESSION_TOKEN="\$(cat /tmp/irp-cred.txt | jq -r ".Credentials.SessionToken")"
-          terraform apply -auto-approve
+          helm upgrade rabbit chart/ --set persistence.enabled=false --debug --wait --install --namespace prod
+          """
+          script {
+            rc = sh(script: "helm test rabbit --logs --namespace prod", returnStatus: true)
+            if (rc != 0) {
+              sh """
+              helm rollback rabbit 0 -n prod
+              exit 1
+              """
+            }
+          }
+          sh """
+           kubectl delete pod -n prod rabbit-rabbitmq-test
           """
         }
       }
     }
   }
+
 }
